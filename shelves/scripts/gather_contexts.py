@@ -23,8 +23,10 @@ def do_it():
         try:
             clam_obj.gather_context(context, dest)
         except ClamError as e:
-            print e.message
+            libClarisseGui.display_error_dialog(e.message, "Error")
             return
 
+    # TODO: use resources file here
+    libClarisseGui.display_message_dialog("Done Gathering.", "Done Gathering")
 
 do_it()
