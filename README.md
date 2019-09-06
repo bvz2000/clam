@@ -1,0 +1,4 @@
+env vars:
+
+CLAM_CONFIG_PATH
+CLAM_LANGUAGE# clam
