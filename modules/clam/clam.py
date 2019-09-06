@@ -140,7 +140,9 @@ class Clam(object):
 
         output = list()
 
-        outer_pattern = '\h*(?:filename|filename_sys)\s*(.*)\n'
+        # \sfile(?:(?:name_open|name_save))? .*{\n\s*value "(.*)"
+        # outer_pattern = '\h*(?:filename|filename_sys|)\s*(.*)\n'
+        outer_pattern = r'\h*(?:filename|filename_sys|OSL_shader_filename|(?:(?:file|filename_open) .*{\n\s*value)) (".*")\n'
         inner_pattern = '"([^"]*)"'
         with open(project_p, "r") as f:
             lines = f.readlines()
@@ -274,7 +276,7 @@ class Clam(object):
                                 line = line.replace(key, rel_path)
                             else:
                                 line = line.replace(key, remapped[key])
-                    munged_project_f.write(line + "\n")
+                    munged_project_f.write(line)
                     line = source_project_f.readline()
 
         shutil.copyfile(munged_p, project_p)
@@ -363,8 +365,6 @@ class Clam(object):
         for file_p in gather_obj.remapped:
             copied_files_p.append(gather_obj.remapped[file_p])
 
-        print "*"*80
-        print "\n".join(copied_files_p)
         for file_p in copied_files_p:
             if file_p.endswith(".project"):
                 self.munge_project(file_p, gather_obj.remapped, True)
@@ -626,11 +626,7 @@ class Clam(object):
         else:
             context_url = parent_context.get_full_name().rstrip("/")
 
-        print "="*80
-        print context_url
-
         asset_url = "/".join([context_url, name])
-        print asset_url
         geo_url = "/".join([asset_url, "geo"])
         shading_url = "/".join([asset_url, "shading"])
         maps_url = "/".join([shading_url, "maps"])
