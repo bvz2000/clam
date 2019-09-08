@@ -37,13 +37,16 @@ from bvzlib import config
 from bvzlib import resources
 
 from libClarisse import libClarisse
-from libClarisse import libClarisseGui
 
 from squirrel.gather import gather
 from squirrel.librarian import librarian
 from squirrel.shared.squirrelerror import SquirrelError
 
 from clamerror import ClamError
+
+# Default regex for finding file references in a clarisse project text file
+OUTER_PATTERN = r'\h*(?:filename|filename_sys|OSL_shader_filename|(?:(?:file|filename_open) .*{\n\s*value)) (".*")\n'
+INNER_PATTERN = '"([^"]*)"'
 
 
 # ==============================================================================
@@ -83,7 +86,12 @@ class Clam(object):
         self.do_verified_copy = self.config_obj.getboolean("settings",
                                                            "do_verified_copy")
 
-        self.librarian = librarian.Librarian(language)
+        self.librarian = librarian.Librarian(init_name=False,
+                                             init_schema=False,
+                                             init_store=False,
+                                             language=language)
+
+        self.invalid_asset_names = dict()
 
     # --------------------------------------------------------------------------
     def validate_config(self):
@@ -94,7 +102,9 @@ class Clam(object):
         """
 
         sections = dict()
-        sections["settings"] = ["do_verified_copy"]
+        sections["settings"] = ["do_verified_copy",
+                                "file_ref_outer_regex",
+                                "file_ref_inner_regex"]
 
         failures = self.config_obj.validation_failures(sections)
         if failures:
@@ -111,18 +121,8 @@ class Clam(object):
                 raise ClamError(err.msg, err.code)
 
     # --------------------------------------------------------------------------
-    def set_attributes(self):
-        """
-        Set up the instance.
-
-        :return: Nothing.
-        """
-
-        pass
-
-    # --------------------------------------------------------------------------
-    @staticmethod
-    def refs_in_project(project_p):
+    def refs_in_project(self,
+                        project_p):
         """
         Given a path to a clarisse project, open that project's text file and
         extract all of the references to NON-clarisse files. We do this via a
@@ -142,8 +142,14 @@ class Clam(object):
 
         # \sfile(?:(?:name_open|name_save))? .*{\n\s*value "(.*)"
         # outer_pattern = '\h*(?:filename|filename_sys|)\s*(.*)\n'
-        outer_pattern = r'\h*(?:filename|filename_sys|OSL_shader_filename|(?:(?:file|filename_open) .*{\n\s*value)) (".*")\n'
-        inner_pattern = '"([^"]*)"'
+        outer_pattern = self.config_obj.get("settings", "file_ref_outer_regex")
+        if not outer_pattern.strip():
+            outer_pattern = OUTER_PATTERN
+
+        inner_pattern = self.config_obj.get("settings", "file_ref_inner_regex")
+        if not inner_pattern.strip():
+            inner_pattern = INNER_PATTERN
+
         with open(project_p, "r") as f:
             lines = f.readlines()
 
@@ -287,7 +293,8 @@ class Clam(object):
                        project_p,
                        dest,
                        skip_published=False,
-                       repos=None):
+                       repos=None,
+                       verbose=False):
         """
         Given a path to a clarisse project, open that project and recursively
         gather all the files referenced in this project or any of its
@@ -302,6 +309,8 @@ class Clam(object):
         :param repos: A list of repos to check if skip_published is True. If
                None, then all repos will be checked (if skip_published is True).
                Defaults to None.
+        :param verbose: If True, then the copy operations will be printed to
+               stdOut.
 
         :return: The directory into which the project is gathered.
         """
@@ -346,7 +355,10 @@ class Clam(object):
                 repo_names = repos
                 check_all_repos = False
 
-            librarian_obj = librarian.Librarian()
+            librarian_obj = librarian.Librarian(init_name=False,
+                                                init_schema=True,
+                                                init_store=True,
+                                                language=self.language)
 
             files_to_cull = list()
             for source_p in gather_obj.remapped:
@@ -359,7 +371,7 @@ class Clam(object):
                 gather_obj.cull_file(file_to_cull)
 
         # Actually copy the files to their remap location
-        gather_obj.copy_files(verbose=True)
+        gather_obj.copy_files(verbose=verbose)
 
         copied_files_p = list()
         for file_p in gather_obj.remapped:
@@ -372,7 +384,8 @@ class Clam(object):
     # --------------------------------------------------------------------------
     def gather_context(self,
                        context,
-                       dest):
+                       dest,
+                       verbose=False):
         """
         Given a context, gather all of the files in it (and any referenced
         contexts).
@@ -382,6 +395,8 @@ class Clam(object):
                This should be a directory, inside of which the asset directory
                will be created (i.e. the individual files will be gathered into
                a sub-dir inside this dir that is named the same as the context).
+        :param verbose: If True, then the copy operations will be printed to
+               stdOut.
 
         :return: The directory where the context was gathered. I.e. the sub-dir
                  of dest that is the gathered context.
@@ -404,8 +419,9 @@ class Clam(object):
         dest = os.path.join(dest, context.get_name())
         if not os.path.exists(dest):
             os.mkdir(dest)
-        self.gather_project(exported_p, dest)
-
+        self.gather_project(project_p=exported_p,
+                            dest=dest,
+                            verbose=verbose)
         os.remove(exported_p)
 
         return dest
@@ -432,6 +448,10 @@ class Clam(object):
         if not libClarisse.contexts_are_atomic(context):
             raise ClamError("Context is not atomic", 1001)
 
+        self.librarian.init_name()
+        self.librarian.init_schema()
+        self.librarian.init_store()
+
         asset_name = context.get_name()
 
         try:
@@ -441,7 +461,9 @@ class Clam(object):
 
         gather_parent_d = self.librarian.get_gather_loc()
         gather_parent_d = tempfile.mkdtemp(dir=gather_parent_d)
-        gathered_loc = self.gather_context(context, gather_parent_d)
+        gathered_loc = self.gather_context(context=context,
+                                           dest=gather_parent_d,
+                                           verbose=False)
 
         token = self.librarian.extract_token_from_name(context.get_name(), repo)
         pub_loc = self.librarian.get_publish_loc(token, repo)
@@ -487,40 +509,6 @@ class Clam(object):
 
         # TODO: Replace local context with a reference to the published project
 
-    # ---------------------------------------------------------------------------
-    def failed_name_validations(self,
-                                names,
-                                repo):
-        """
-        Given a list of asset names, returns None if all of the names are valid.
-        Returns a dictionary if any of the names are not valid). The key is the
-        name that is not valid, and the value is a string describing how the
-        name is not valid.
-
-        :param names: A list of asset names (in string format).
-        :param repo: The name of the repo to validate against.
-
-        :return: None if all of the names are valid. If any are invalid, returns
-                 a dictionary where the keys are any names that are not valid
-                 and the values are the reasons why the names are not valid.
-        """
-
-        assert type(names) is list
-        for name in names:
-            assert type(name) is str
-        assert type(repo) is str and repo != ""
-
-        failed = dict()
-        for name in names:
-            try:
-                self.librarian.validate_name(name, repo)
-            except SquirrelError as e:
-                failed[name] = e.message
-
-        if not failed:
-            return None
-        return failed
-
     # --------------------------------------------------------------------------
     def validate_context_names(self,
                                contexts,
@@ -547,58 +535,30 @@ class Clam(object):
         assert repo is None or (type(repo) is str and repo != "")
         assert type(display_success) is bool
 
-        if not repo:
-            repo = self.librarian.get_default_repo()
+        self.librarian.init_name()
 
         names = list()
         for context in contexts:
             names.append(context.get_name())
 
-        failed = self.failed_name_validations(names, repo)
-        if failed:
-            title = self.resc.message("failed_name_title")
-            body = self.resc.message("failed_name_body")
-            for failure in failed:
-                body += "\n   --> " + failure + "  -  " + failed[failure]
-            libClarisseGui.display_error_dialog(body, title)
+        self.invalid_asset_names = dict()
+        for name in names:
+            try:
+                self.librarian.validate_name(name, repo)
+            except SquirrelError as e:
+                self.invalid_asset_names[name] = e.message
+
+        if self.invalid_asset_names:
             return False
-
-        if not failed:
-            if display_success:
-                title = self.resc.message("success_title")
-                body = self.resc.message("success_body")
-                libClarisseGui.display_message_dialog(body, title)
-            return True
-
-        return False
+        return True
 
     # --------------------------------------------------------------------------
-    def selection_to_context_list(self):
-        """
-        Takes in the selection and returns a list of contexts.
-
-        :return:
-        """
-
-        items = libClarisse.clarisse_array_to_python_list(ix.selection)
-        contexts = list()
-        for item in items:
-            if item.is_context():
-                contexts.append(item)
-
-        if not contexts:
-            title = self.resc.message("no_contexts_title")
-            body = self.resc.message("no_contexts_body")
-            libClarisseGui.display_error_dialog(body, title)
-            return None
-
-        return contexts
-
-    # --------------------------------------------------------------------------------------------------
     def create_empty_asset_structure(self,
                                      name,
+                                     variant_count=None,
                                      parent_context=None,
-                                     existing_geo=None):
+                                     existing_geo=None,
+                                     validate_name=True):
         """
         Create a new asset context in Clarisse. This context will have
         sub-contexts and combiners, groups, and shading layers in it that define
@@ -609,25 +569,51 @@ class Clam(object):
         :param parent_context: The context into which the new asset will be
                created. If None, then it will be created at the root of the
                project.
-        :param existing_geo: If given as a context or item, this will move the
-               context (or item) into the geo sub-context. If None, nothing
-               happens. Defaults to None.
+        :param variant_count: The number of variants that will be created. If
+               None, then defaults to 1.
+        :param existing_geo: If given as a list of contexts or items, this will
+               move these contexts (or items) into the geo sub-context. If None,
+               nothing happens. Expects a list or None. Defaults to None.
+        :param validate_name: If True, then the name will be validated against
+               the librarian. If False, then any name will be accepted.
 
         :return: Nothing
         """
 
         assert type(name) is str and name
+        assert variant_count is None or type(variant_count) is int
         assert parent_context is None or parent_context.is_context()
+        assert existing_geo is None or type(existing_geo) is list
+        assert type(validate_name) is bool
 
-        self.librarian.validate_name(name)
+        if not variant_count:
+            variant_count = 1
+
+        if validate_name:
+            self.librarian.init_name()
+            try:
+                self.librarian.validate_name(name)
+            except SquirrelError as e:
+                raise ClamError(e.message, e.code)
 
         if not parent_context:
-            context_url = r"project:/"
+            context_url = r"project://"
         else:
-            context_url = parent_context.get_full_name().rstrip("/")
+            context_url = parent_context.get_full_name()
+
+        if not ix.item_exists(context_url):
+            msg = self.resc.error(103)
+            raise ClamError(msg, 103)
 
         asset_url = "/".join([context_url, name])
+
+        if ix.item_exists(asset_url):
+            err = self.resc.error(105)
+            err.msg = err.msg.format(name=name)
+            raise ClamError(err.msg, 105)
+
         geo_url = "/".join([asset_url, "geo"])
+        var_urls = list()
         shading_url = "/".join([asset_url, "shading"])
         maps_url = "/".join([shading_url, "maps"])
         support_url = "/".join([shading_url, "support"])
@@ -635,36 +621,53 @@ class Clam(object):
 
         asset_context = libClarisse.create_context(asset_url)
         libClarisse.create_context(geo_url)
-
         libClarisse.create_context(shading_url)
         libClarisse.create_context(maps_url)
         libClarisse.create_context(support_url)
         libClarisse.create_context(shaders_url)
 
-        if existing_geo:
-            ix.cmds.MoveItemTo(existing_geo.get_full_name(), geo_url)
+        for i in range(variant_count):
+            var_url = "/".join([geo_url, "var" + str(i + 1)])
+            var_urls.append(var_url)
+            libClarisse.create_context(var_url)
 
-        geo_group = ix.cmds.CreateObject("geo_gr", "Group", "Global", geo_url)
-        ix.cmds.SetValues([geo_group.get_full_name() + ".inclusion_rule[0]"],
-                          ["./*"])
-        ix.cmds.SetValues([geo_group.get_full_name() + ".exclusion_rule[0]"],
-                          ["*_HDN*"])
+            geo_gr = ix.cmds.CreateObject("geo_gr",
+                                          "Group",
+                                          "Global",
+                                          var_url)
+
+            ix.cmds.SetValues([geo_gr.get_full_name() + ".inclusion_rule[0]"],
+                              ["./*"])
+            ix.cmds.SetValues([geo_gr.get_full_name() + ".exclusion_rule[0]"],
+                              ["*_HDN*"])
+
+            out_combiner = ix.cmds.CreateObject(
+                name + "_var" + str(i + 1) + "_OUT",
+                "SceneObjectCombiner",
+                "Global",
+                asset_url)
+
+            ix.cmds.AddValues([out_combiner.get_full_name() + ".objects"],
+                              [geo_gr.get_full_name()])
+
+        if existing_geo:
+            i = 0
+            for existing in existing_geo:
+                ix.cmds.MoveItemTo(existing.get_full_name(), var_urls[i])
+                i += 1
 
         material = ix.cmds.CreateObject(name + "_MAT",
                                         "MaterialPhysicalStandard",
                                         shaders_url)
 
-        out_combiner = ix.cmds.CreateObject(name + "_OUT",
-                                            "SceneObjectCombiner",
-                                            "Global",
-                                            asset_url)
-        ix.cmds.AddValues([out_combiner.get_full_name() + ".objects"],
-                          [geo_group.get_full_name()])
-
         shading_layer = ix.cmds.CreateObject(name + "_sl",
                                              "ShadingLayer",
                                              "Global",
                                              asset_url)
+
+        ix.cmds.AddShadingLayerRule(shading_layer.get_full_name(),
+                                    0,
+                                    ["filter", "", "is_visible", "1"])
 
         ix.cmds.SetShadingLayerRulesProperty(shading_layer.get_full_name(),
                                              [0],
