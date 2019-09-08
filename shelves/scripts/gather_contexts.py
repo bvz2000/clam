@@ -1,9 +1,10 @@
 import os
 
-from libClarisse import libClarisseGui
-
 from clam import clam
 from clam.clamerror import ClamError
+
+from libClarisse import libClarisse
+from libClarisse import libClarisseGui
 
 
 def do_it():
@@ -13,11 +14,11 @@ def do_it():
     else:
         language = "english"
 
-    # TODO: Switch to reading this from the .ini resources file
-    dest = libClarisseGui.display_get_path_dialog("Enter Path Where Gathered Files Should Live")
-
     clam_obj = clam.Clam(language)
-    contexts = clam_obj.selection_to_context_list()
+    contexts = libClarisse.selection_to_context_list()
+
+    body = clam_obj.resc.message("get_gather_path_body")
+    dest = libClarisseGui.display_get_path_dialog(body)
 
     for context in contexts:
         try:
@@ -26,7 +27,9 @@ def do_it():
             libClarisseGui.display_error_dialog(e.message, "Error")
             return
 
-    # TODO: use resources file here
-    libClarisseGui.display_message_dialog("Done Gathering.", "Done Gathering")
+    title = clam_obj.resc.message("done_gathering_title")
+    body = clam_obj.resc.message("done_gathering_body")
+    libClarisseGui.display_message_dialog(body, title)
+
 
 do_it()
