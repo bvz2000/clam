@@ -627,7 +627,8 @@ class Clam(object):
         libClarisse.create_context(shaders_url)
 
         for i in range(variant_count):
-            var_url = "/".join([geo_url, "var" + str(i + 1)])
+            var_n = "var" + str(i + 1)
+            var_url = "/".join([geo_url, var_n])
             var_urls.append(var_url)
             libClarisse.create_context(var_url)
 
@@ -636,19 +637,21 @@ class Clam(object):
                                           "Global",
                                           var_url)
 
-            ix.cmds.SetValues([geo_gr.get_full_name() + ".inclusion_rule[0]"],
+            geo_gr_n = geo_gr.get_full_name()
+
+            ix.cmds.SetValues([geo_gr_n + ".inclusion_rule[0]"],
                               ["./*"])
-            ix.cmds.SetValues([geo_gr.get_full_name() + ".exclusion_rule[0]"],
+            ix.cmds.SetValues([geo_gr_n + ".exclusion_rule[0]"],
                               ["*_HDN*"])
 
             out_combiner = ix.cmds.CreateObject(
-                name + "_var" + str(i + 1) + "_OUT",
+                name + "_" + var_n + "_OUT",
                 "SceneObjectCombiner",
                 "Global",
                 asset_url)
 
             ix.cmds.AddValues([out_combiner.get_full_name() + ".objects"],
-                              [geo_gr.get_full_name()])
+                              [geo_gr_n])
 
         if existing_geo:
             i = 0
