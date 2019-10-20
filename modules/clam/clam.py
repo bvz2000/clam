@@ -44,10 +44,6 @@ from squirrel.shared.squirrelerror import SquirrelError
 
 from clamerror import ClamError
 
-# Default regex for finding file references in a clarisse project text file
-OUTER_PATTERN = r'\h*(?:filename|filename_sys|OSL_shader_filename|(?:(?:file|filename_open) .*{\n\s*value)) (".*")\n'
-INNER_PATTERN = '"([^"]*)"'
-
 
 # ==============================================================================
 class Clam(object):
@@ -102,9 +98,7 @@ class Clam(object):
         """
 
         sections = dict()
-        sections["settings"] = ["do_verified_copy",
-                                "file_ref_outer_regex",
-                                "file_ref_inner_regex"]
+        sections["settings"] = ["do_verified_copy"]
 
         failures = self.config_obj.validation_failures(sections)
         if failures:
@@ -119,6 +113,46 @@ class Clam(object):
                                          setting=failures[1],
                                          section=failures[0])
                 raise ClamError(err.msg, err.code)
+
+    # --------------------------------------------------------------------------
+    @staticmethod
+    def find_all_file_references_in_project(project_p):
+        """
+        Given a path to a clarisse project, open that project's text file and
+        extract all of the references to any external files. We do this via a
+        text file vs. built in clarisse api functions because it is MUCH easier
+        this way (even if it is a bit janky).
+
+
+        :param project_p: The path to the project we are testing.
+
+        :return: A list of all the files referenced in this project.
+        """
+
+        assert os.path.exists(project_p)
+        assert os.path.isfile(project_p)
+        assert os.path.splitext(project_p)[1] == ".project"
+
+        files = list()
+
+        file_pattern = r'"(?:[^"\\]|\\.)*"'
+
+        with open(project_p, "r") as f:
+            lines = f.readlines()
+
+        for line in lines:
+            if line.strip().lower().startswith("#preferences"):
+                break
+
+            # Check to see if the current line looks like a file pattern
+            potential_files = re.findall(file_pattern, line)
+            if potential_files:
+                for file_name in potential_files:
+                    file_name = file_name.strip('"')
+                    if os.path.exists(file_name) and os.path.isfile(file_name):
+                        files.append(file_name)
+
+        return files
 
     # --------------------------------------------------------------------------
     def refs_in_project(self,
@@ -140,35 +174,13 @@ class Clam(object):
 
         output = list()
 
-        # \sfile(?:(?:name_open|name_save))? .*{\n\s*value "(.*)"
-        # outer_pattern = '\h*(?:filename|filename_sys|)\s*(.*)\n'
-        outer_pattern = self.config_obj.get("settings", "file_ref_outer_regex")
-        if not outer_pattern.strip():
-            outer_pattern = OUTER_PATTERN
+        all_files_p = self.find_all_file_references_in_project(project_p)
 
-        inner_pattern = self.config_obj.get("settings", "file_ref_inner_regex")
-        if not inner_pattern.strip():
-            inner_pattern = INNER_PATTERN
+        if all_files_p:
 
-        with open(project_p, "r") as f:
-            lines = f.readlines()
-
-        data = ""
-        for line in lines:
-            if line.startswith("#preferences"):
-                break
-            data += line
-
-        references = re.findall(outer_pattern, data)
-
-        if references:
-
-            for ref in references:
-                file_names = re.findall(inner_pattern, ref)
-                for file_name in file_names:
-                    file_name = libClarisse.pdir_to_path(file_name, project_p)
-                    if not file_name.endswith(".project"):
-                        output.append(file_name)
+            for file_p in all_files_p:
+                if not file_p.endswith(".project"):
+                        output.append(file_p)
 
         return output
 
@@ -191,21 +203,17 @@ class Clam(object):
         assert os.path.splitext(project_p)[1] == ".project"
 
         output = list()
+        sub_projects = list()
 
-        pattern = r'\h*(?:filename|filename_sys)\s*"(.*\.project)"\s*\n'
-        with open(project_p, "r") as f:
-            lines = f.readlines()
+        all_files_p = self.find_all_file_references_in_project(project_p)
 
-        data = ""
-        for line in lines:
-            if line.startswith("#preferences"):
-                break
-            data += line
+        if all_files_p:
 
-        sub_projects = re.findall(pattern, data)
+            for file_p in all_files_p:
+                if file_p.endswith(".project"):
+                    sub_projects.append(file_p)
 
         if sub_projects:
-
             for sub_project in sub_projects:
                 sub_project = libClarisse.pdir_to_path(sub_project, project_p)
                 output.append(sub_project)
@@ -482,7 +490,7 @@ class Clam(object):
 
         # TODO: Delete the gather_loc
         # TODO: return the path to the published project
-        return "ljh" # <-- this should be the path to the published project
+        return "ljh"  # <-- this should be the path to the published project
 
     # --------------------------------------------------------------------------
     def publish_context_as_ref(self,
